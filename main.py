@@ -15,75 +15,83 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 genai.configure(api_key=GOOGLE_API_KEY)
 
-# تمويه المتصفح لتجنب الحظر
+# تمويه المتصفح
 session = requests.Session()
 session.headers.update({
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 })
 
 # ==========================================
-# 2. الدوال
+# 2. المستكشف الذكي للموديلات (Smart Model Selector)
 # ==========================================
-
-def get_price(ticker):
-    """جلب السعر من Yahoo مع معالجة الأخطاء"""
+def get_best_available_model():
+    """
+    هذه الدالة تسأل جوجل عن الموديلات المتاحة وتختار أفضل واحد تلقائياً
+    لحل مشكلة 404 Model Not Found
+    """
+    print("🔍 Searching for available Gemini models...")
     try:
-        stock = yf.Ticker(ticker, session=session)
-        if stock.fast_info and stock.fast_info.last_price:
-            return f"{stock.fast_info.last_price:.2f}"
-        hist = stock.history(period='1d')
-        if not hist.empty:
-            return f"{hist['Close'].iloc[-1]:.2f}"
-    except:
-        pass
-    return "N/A"
-
-def get_diverse_news(ticker):
-    """البحث في الويب عن أخبار وتحليلات"""
-    print(f"🌍 Searching web for {ticker}...")
-    news_summary = []
-    try:
-        # البحث عن الأخبار الحديثة
-        results = DDGS().text(f"{ticker} stock news analysis today", max_results=3)
-        if results:
-            for res in results:
-                title = res.get('title', '')
-                body = res.get('body', '')
-                source = res.get('href', '')
-                news_summary.append(f"- {title}: {body} (Source: {source})")
-        else:
-            news_summary.append("No specific news found via search.")
+        # نطلب قائمة الموديلات التي تدعم توليد النصوص
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                # نبحث عن موديلات Pro أو Flash
+                if 'gemini' in m.name and ('pro' in m.name or 'flash' in m.name):
+                    print(f"✅ Found working model: {m.name}")
+                    return m.name
     except Exception as e:
-        print(f"Search error: {e}")
-        news_summary.append("Could not fetch news.")
-    return "\n".join(news_summary)
+        print(f"⚠️ Error listing models: {e}")
+    
+    # إذا فشل البحث، نعود للموديل القياسي كاحتياطي
+    print("⚠️ Could not list models, falling back to 'gemini-pro'")
+    return 'gemini-pro'
 
+# ==========================================
+# 3. جمع البيانات
+# ==========================================
 def get_market_data():
-    # قائمة الأسهم (يمكنك زيادتها)
     tickers = ['NVDA', 'TSLA', 'AAPL', 'AMZN', 'GOOGL'] 
     full_report_data = []
     
+    print("📊 Collecting data from Web & Yahoo...")
     for t in tickers:
-        price = get_price(t)
-        news = get_diverse_news(t)
-        
-        entry = f"""
-        SYMBOL: {t}
-        CURRENT PRICE: {price} USD
-        NEWS SNIPPETS:
-        {news}
-        -----------------------
-        """
+        # جلب السعر
+        price = "N/A"
+        try:
+            stock = yf.Ticker(t, session=session)
+            if stock.fast_info and stock.fast_info.last_price:
+                price = f"{stock.fast_info.last_price:.2f}"
+            else:
+                hist = stock.history(period='1d')
+                if not hist.empty:
+                    price = f"{hist['Close'].iloc[-1]:.2f}"
+        except:
+            pass
+
+        # جلب الأخبار (Web Search)
+        news_snippets = []
+        try:
+            results = DDGS().text(f"{t} stock news analyst rating today", max_results=2)
+            if results:
+                for res in results:
+                    news_snippets.append(f"- {res['title']}")
+        except:
+            news_snippets.append("No news found.")
+
+        entry = f"STOCK: {t} | PRICE: {price} | NEWS: {'; '.join(news_snippets)}"
         full_report_data.append(entry)
-        time.sleep(1) # تفادي الضغط على السيرفرات
+        time.sleep(1) 
         
     return "\n".join(full_report_data)
 
+# ==========================================
+# 4. التحليل والإرسال
+# ==========================================
 def generate_ai_report(data):
-    print("🤖 Analyzing with Gemini 1.5 Flash...")
+    # 1. نحصل على اسم الموديل الصحيح ديناميكياً
+    model_name = get_best_available_model()
     
-    # === التعديل هنا: استخدام الموديل الجديد ===
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    print(f"🤖 Analyzing using: {model_name}")
+    model = genai.GenerativeModel(model_name)
     
     safety_settings = {
         HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
@@ -93,15 +101,12 @@ def generate_ai_report(data):
     }
 
     prompt = f"""
-    أنت خبير اقتصادي. لديك بيانات من الويب عن عدة أسهم.
-    المطلوب: تقرير تليجرام مختصر باللغة العربية.
+    Acting as a financial analyst, summarize these stocks for a Telegram message in Arabic.
+    - Be concise.
+    - Use emojis (📈, 📉).
+    - Focus on the *WHY* (News).
     
-    لكل سهم اكتب:
-    - السعر.
-    - جملة واحدة تشرح سبب التحرك (بناء على الأخبار المرفقة).
-    - استخدم الإيموجي المناسب (🚀 لخبر جيد، 🔻 لخبر سيء).
-    
-    البيانات الخام:
+    Data:
     {data}
     """
     
@@ -109,25 +114,26 @@ def generate_ai_report(data):
         response = model.generate_content(prompt, safety_settings=safety_settings)
         return response.text
     except Exception as e:
-        return f"AI Error: {str(e)}"
+        return f"AI Generation Error ({model_name}): {str(e)}"
 
 def send_telegram_message(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("❌ Missing Telegram Tokens")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     requests.post(url, json=payload)
 
-# ==========================================
-# 3. التشغيل
-# ==========================================
 if __name__ == "__main__":
     try:
         data = get_market_data()
-        if not data.strip():
-            send_telegram_message("❌ لم يتم جمع بيانات.")
-        else:
+        if len(data) > 10:
             report = generate_ai_report(data)
             send_telegram_message(report)
+            print("✅ Process Completed Successfully")
+        else:
+            send_telegram_message("❌ No data collected.")
     except Exception as e:
-        send_telegram_message(f"❌ Critical Script Error: {str(e)}")
+        err_msg = f"❌ Critical Script Error: {str(e)}"
+        print(err_msg)
+        send_telegram_message(err_msg)
