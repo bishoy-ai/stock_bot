@@ -2,10 +2,8 @@ name: Daily Stock Analysis
 
 on:
   schedule:
-    # التوقيت بنظام UTC. الساعة 3 مساء بتوقيت مصر/السعودية تعادل تقريباً 12:00 أو 13:00 UTC
-    # هذا السطر يعني: الساعة 13:00 كل يوم
-    - cron: '0 15 * * *'
-  workflow_dispatch: # يسمح لك بتشغيله يدوياً للتجربة
+    - cron: '0 13 * * *'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -18,14 +16,14 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v2
         with:
-          python-version: '3.11' 
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
 
       - name: Run script
-        env:
+        env: 
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
