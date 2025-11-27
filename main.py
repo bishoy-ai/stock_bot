@@ -47,7 +47,7 @@ def get_data_and_analyze(tickers):
             continue
             
     # إرسال لـ Gemini
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-pro')
     prompt = f"""
     لخّص تحليل هذه الأسهم في رسالة قصيرة مناسبة لتطبيق تليجرام.
     البيانات: {stock_data}
