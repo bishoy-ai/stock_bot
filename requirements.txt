@@ -1,5 +1,5 @@
-google-generativeai>=0.5.0
+google-generativeai>=0.7.2
 yfinance
-duckduckgo-search
+duckduckgo-search>=6.0.0
 requests
 pandas
