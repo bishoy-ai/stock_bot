@@ -21,83 +21,89 @@ session.headers.update({
 })
 
 # ==========================================
-# 2. اختيار الموديل المستقر (Stable Model Selector)
+# 2. اختيار الموديل الصحيح (بدون تخمين)
 # ==========================================
-def get_stable_model_name():
-    """
-    هذه الدالة تختار الموديل المستقر فقط (Flash 1.5)
-    وتبتعد عن الموديلات التجريبية (Experimental) التي تسبب خطأ Quota
-    """
-    print("🔍 Searching for STABLE Gemini models...")
+def get_working_model_name():
+    print("🔍 Listing available models for your API Key...")
+    valid_models = []
     try:
-        # نبحث تحديداً عن موديل Flash المستقر
-        # نتجاهل أي موديل يحتوي على كلمة 'exp' أو 'preview'
         for m in genai.list_models():
+            # نتأكد أن الموديل يدعم توليد النصوص
             if 'generateContent' in m.supported_generation_methods:
-                name = m.name.lower()
-                # الشرط الذهبي: نريد Flash ولا نريد التجريبي
-                if 'flash' in name and '1.5' in name and 'exp' not in name and 'preview' not in name:
-                    print(f"✅ Found Stable Model: {m.name}")
-                    return m.name
+                print(f"   - Found: {m.name}")
+                valid_models.append(m.name)
         
-        # إذا لم نجده، نبحث عن Pro المستقر
-        for m in genai.list_models():
-            if 'pro' in m.name and '1.5' in m.name and 'exp' not in m.name:
-                return m.name
+        # الآن نختار الأفضل بناء على القائمة الفعلية
+        # الأولوية 1: Flash المستقر
+        for m in valid_models:
+            if 'flash' in m and 'exp' not in m and '001' in m: # models/gemini-1.5-flash-001
+                print(f"✅ Selected Stable Flash: {m}")
+                return m
+
+        # الأولوية 2: Flash العام
+        for m in valid_models:
+            if 'flash' in m and 'exp' not in m:
+                print(f"✅ Selected Flash: {m}")
+                return m
+        
+        # الأولوية 3: Pro المستقر
+        for m in valid_models:
+            if 'pro' in m and 'exp' not in m:
+                print(f"✅ Selected Pro: {m}")
+                return m
 
     except Exception as e:
         print(f"⚠️ Error listing models: {e}")
     
-    # الخيار الأخير المضمون دائماً
-    return 'models/gemini-1.5-flash'
+    # إذا فشل كل شيء، نستخدم الاسم القديم جداً الذي يعمل دائماً
+    print("⚠️ Fallback to 'gemini-pro'")
+    return 'gemini-pro'
 
 # ==========================================
 # 3. جمع البيانات
 # ==========================================
 def get_market_data():
-    tickers = ['NVDA', 'TSLA', 'AAPL', 'AMZN', 'BTC-USD'] 
-    full_report_data = []
+    tickers = ['NVDA', 'TSLA', 'AAPL', 'BTC-USD']
+    data = []
+    print("📊 Fetching Data...")
     
-    print("📊 Collecting data...")
     for t in tickers:
-        price = "N/A"
         try:
+            # Price
+            price = "N/A"
             stock = yf.Ticker(t, session=session)
             if stock.fast_info and stock.fast_info.last_price:
                 price = f"{stock.fast_info.last_price:.2f}"
-            else:
-                hist = stock.history(period='1d')
-                if not hist.empty:
-                    price = f"{hist['Close'].iloc[-1]:.2f}"
+            
+            # News (Simple Search)
+            news_txt = ""
+            try:
+                res = DDGS().text(f"{t} stock news today", max_results=1)
+                if res: news_txt = res[0]['title']
+            except: pass
+            
+            data.append(f"{t}: {price} | News: {news_txt}")
+            time.sleep(1)
         except:
             pass
-
-        news_snippets = []
-        try:
-            # تقليل عدد النتائج إلى 1 لتسريع العملية وتقليل الضغط
-            results = DDGS().text(f"{t} stock news summary", max_results=1)
-            if results:
-                for res in results:
-                    news_snippets.append(f"- {res['title']}")
-        except:
-            pass
-
-        entry = f"STOCK: {t} | PRICE: {price} | NEWS: {'; '.join(news_snippets)}"
-        full_report_data.append(entry)
-        time.sleep(1) 
-        
-    return "\n".join(full_report_data)
+            
+    return "\n".join(data)
 
 # ==========================================
 # 4. التحليل والإرسال
 # ==========================================
-def generate_ai_report(data):
-    model_name = get_stable_model_name()
-    print(f"🤖 Analyzing using: {model_name}")
-    
+def generate_and_send():
+    data = get_market_data()
+    if not data:
+        print("No data collected")
+        return
+
+    # الحصول على الموديل
+    model_name = get_working_model_name()
     model = genai.GenerativeModel(model_name)
     
-    safety_settings = {
+    # إعدادات الأمان
+    safety = {
         HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
         HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
         HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
@@ -105,46 +111,30 @@ def generate_ai_report(data):
     }
 
     prompt = f"""
-    You are a financial news bot. Summarize this data for Telegram in Arabic.
-    - Be extremely concise.
-    - Mention price and the main reason for movement.
-    - Use emojis.
-    
-    Data:
-    {data}
+    Summarize stock status for Telegram in Arabic. Use emojis.
+    Data: {data}
     """
-    
-    try:
-        # إضافة تأخير بسيط قبل الطلب لتجنب Rate Limit
-        time.sleep(2)
-        response = model.generate_content(prompt, safety_settings=safety_settings)
-        return response.text
-    except Exception as e:
-        # إذا حدث خطأ 429 مرة أخرى، ننتظر ونحاول مرة واحدة أخيرة
-        if "429" in str(e):
-            print("⏳ Quota hit, waiting 10 seconds and retrying...")
-            time.sleep(10)
-            try:
-                response = model.generate_content(prompt, safety_settings=safety_settings)
-                return response.text
-            except:
-                pass
-        return f"AI Error: {str(e)}"
 
-def send_telegram_message(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    requests.post(url, json=payload)
+    try:
+        response = model.generate_content(prompt, safety_settings=safety)
+        msg = response.text
+        
+        # إرسال لتليجرام
+        if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}
+            )
+            print("✅ Message Sent!")
+        else:
+            print("❌ Telegram tokens missing")
+            
+    except Exception as e:
+        print(f"❌ AI Error: {e}")
+        # إرسال رسالة الخطأ لتليجرام لنعرف السبب
+        if TELEGRAM_TOKEN:
+             requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", 
+             json={"chat_id": TELEGRAM_CHAT_ID, "text": f"Error: {e}"})
 
 if __name__ == "__main__":
-    try:
-        data = get_market_data()
-        if len(data) > 10:
-            report = generate_ai_report(data)
-            send_telegram_message(report)
-        else:
-            send_telegram_message("❌ No data collected.")
-    except Exception as e:
-        send_telegram_message(f"❌ Script Error: {str(e)}")
+    generate_and_send()
