@@ -7,7 +7,7 @@ import yfinance as yf
 from duckduckgo_search import DDGS
 
 # ==========================================
-# إعدادات
+# 1. الإعدادات
 # ==========================================
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -15,27 +15,22 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 genai.configure(api_key=GOOGLE_API_KEY)
 
-# تمويه المتصفح
+# تمويه المتصفح لتجنب الحظر
 session = requests.Session()
 session.headers.update({
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 })
 
 # ==========================================
-# أدوات جلب البيانات (Multi-Source)
+# 2. الدوال
 # ==========================================
 
 def get_price(ticker):
-    """
-    محاولة جلب السعر فقط من Yahoo.
-    إذا فشل، يمكننا مستقبلاً إضافة مصدر آخر هنا.
-    """
+    """جلب السعر من Yahoo مع معالجة الأخطاء"""
     try:
         stock = yf.Ticker(ticker, session=session)
-        # نحاول جلب السعر اللحظي أو سعر الإغلاق السابق
         if stock.fast_info and stock.fast_info.last_price:
             return f"{stock.fast_info.last_price:.2f}"
-        
         hist = stock.history(period='1d')
         if not hist.empty:
             return f"{hist['Close'].iloc[-1]:.2f}"
@@ -44,61 +39,52 @@ def get_price(ticker):
     return "N/A"
 
 def get_diverse_news(ticker):
-    """
-    هنا السحر: نبحث في الويب بالكامل عن أخبار السهم
-    هذا يجلب عناوين من CNBC, Reuters, Motley Fool وغيرها
-    """
-    print(f"🌍 Searching web for {ticker} news...")
+    """البحث في الويب عن أخبار وتحليلات"""
+    print(f"🌍 Searching web for {ticker}...")
     news_summary = []
     try:
-        # نبحث عن آخر الأخبار المالية لهذا السهم
-        # نستخدم backend='api' أو 'html' لنتائج أسرع
-        results = DDGS().text(f"{ticker} stock analyst rating news today", max_results=3)
-        
+        # البحث عن الأخبار الحديثة
+        results = DDGS().text(f"{ticker} stock news analysis today", max_results=3)
         if results:
             for res in results:
-                # نأخذ العنوان واسم الموقع (إن وجد في الرابط) ومقتطف الخبر
                 title = res.get('title', '')
                 body = res.get('body', '')
                 source = res.get('href', '')
                 news_summary.append(f"- {title}: {body} (Source: {source})")
         else:
-            news_summary.append("No recent news found via search.")
-            
+            news_summary.append("No specific news found via search.")
     except Exception as e:
-        print(f"Search error for {ticker}: {e}")
-        news_summary.append("Error fetching news.")
-        
+        print(f"Search error: {e}")
+        news_summary.append("Could not fetch news.")
     return "\n".join(news_summary)
 
 def get_market_data():
-    tickers = ['NVDA', 'TSLA', 'AAPL', 'AMZN', 'GOOGL'] # قائمة الأسهم
+    # قائمة الأسهم (يمكنك زيادتها)
+    tickers = ['NVDA', 'TSLA', 'AAPL', 'AMZN', 'GOOGL'] 
     full_report_data = []
     
     for t in tickers:
-        # 1. المصدر الأول: السعر من Yahoo
         price = get_price(t)
-        
-        # 2. المصدر الثاني: الأخبار من محرك البحث (مصادر متنوعة)
         news = get_diverse_news(t)
         
         entry = f"""
-        TICKER: {t}
-        PRICE: {price}USD
-        WEB NEWS & ANALYSIS:
+        SYMBOL: {t}
+        CURRENT PRICE: {price} USD
+        NEWS SNIPPETS:
         {news}
         -----------------------
         """
         full_report_data.append(entry)
-        time.sleep(1) # راحة قصيرة
+        time.sleep(1) # تفادي الضغط على السيرفرات
         
     return "\n".join(full_report_data)
 
 def generate_ai_report(data):
-    print("🤖 Analyzing with Gemini Pro...")
-    model = genai.GenerativeModel('gemini-pro')
+    print("🤖 Analyzing with Gemini 1.5 Flash...")
     
-    # إعدادات الأمان (مهمة جداً)
+    # === التعديل هنا: استخدام الموديل الجديد ===
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    
     safety_settings = {
         HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
         HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -107,20 +93,15 @@ def generate_ai_report(data):
     }
 
     prompt = f"""
-    بصفتك محللاً مالياً، قم بقراءة البيانات المجمعة من مصادر الويب المختلفة (Yahoo, News Sites).
+    أنت خبير اقتصادي. لديك بيانات من الويب عن عدة أسهم.
+    المطلوب: تقرير تليجرام مختصر باللغة العربية.
     
-    المهمة: اكتب تقريراً لتليجرام باللغة العربية.
+    لكل سهم اكتب:
+    - السعر.
+    - جملة واحدة تشرح سبب التحرك (بناء على الأخبار المرفقة).
+    - استخدم الإيموجي المناسب (🚀 لخبر جيد، 🔻 لخبر سيء).
     
-    الشروط:
-    1. ركز على "لماذا" السعر يتحرك (بناء على الأخبار التي وجدتها).
-    2. اذكر المصدر إذا كان الخبر قوياً (مثلاً: حسب رويترز..).
-    3. التنسيق:
-    
-    💎 *[اسم السهم]*: [السعر]
-    📰 *الملخص:* [شرح السبب في سطرين]
-    📊 *الاتجاه:* [صاعد/هابط/محايد]
-    
-    البيانات:
+    البيانات الخام:
     {data}
     """
     
@@ -128,11 +109,8 @@ def generate_ai_report(data):
         response = model.generate_content(prompt, safety_settings=safety_settings)
         return response.text
     except Exception as e:
-        return f"Gemini Analysis Error: {str(e)}"
+        return f"AI Error: {str(e)}"
 
-# ==========================================
-# التشغيل
-# ==========================================
 def send_telegram_message(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
@@ -140,10 +118,16 @@ def send_telegram_message(message):
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     requests.post(url, json=payload)
 
+# ==========================================
+# 3. التشغيل
+# ==========================================
 if __name__ == "__main__":
     try:
         data = get_market_data()
-        report = generate_ai_report(data)
-        send_telegram_message(report)
+        if not data.strip():
+            send_telegram_message("❌ لم يتم جمع بيانات.")
+        else:
+            report = generate_ai_report(data)
+            send_telegram_message(report)
     except Exception as e:
-        send_telegram_message(f"❌ Error: {str(e)}")
+        send_telegram_message(f"❌ Critical Script Error: {str(e)}")
