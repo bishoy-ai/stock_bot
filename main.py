@@ -15,46 +15,51 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 genai.configure(api_key=GOOGLE_API_KEY)
 
-# تمويه المتصفح
 session = requests.Session()
 session.headers.update({
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 })
 
 # ==========================================
-# 2. المستكشف الذكي للموديلات (Smart Model Selector)
+# 2. اختيار الموديل المستقر (Stable Model Selector)
 # ==========================================
-def get_best_available_model():
+def get_stable_model_name():
     """
-    هذه الدالة تسأل جوجل عن الموديلات المتاحة وتختار أفضل واحد تلقائياً
-    لحل مشكلة 404 Model Not Found
+    هذه الدالة تختار الموديل المستقر فقط (Flash 1.5)
+    وتبتعد عن الموديلات التجريبية (Experimental) التي تسبب خطأ Quota
     """
-    print("🔍 Searching for available Gemini models...")
+    print("🔍 Searching for STABLE Gemini models...")
     try:
-        # نطلب قائمة الموديلات التي تدعم توليد النصوص
+        # نبحث تحديداً عن موديل Flash المستقر
+        # نتجاهل أي موديل يحتوي على كلمة 'exp' أو 'preview'
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
-                # نبحث عن موديلات Pro أو Flash
-                if 'gemini' in m.name and ('pro' in m.name or 'flash' in m.name):
-                    print(f"✅ Found working model: {m.name}")
+                name = m.name.lower()
+                # الشرط الذهبي: نريد Flash ولا نريد التجريبي
+                if 'flash' in name and '1.5' in name and 'exp' not in name and 'preview' not in name:
+                    print(f"✅ Found Stable Model: {m.name}")
                     return m.name
+        
+        # إذا لم نجده، نبحث عن Pro المستقر
+        for m in genai.list_models():
+            if 'pro' in m.name and '1.5' in m.name and 'exp' not in m.name:
+                return m.name
+
     except Exception as e:
         print(f"⚠️ Error listing models: {e}")
     
-    # إذا فشل البحث، نعود للموديل القياسي كاحتياطي
-    print("⚠️ Could not list models, falling back to 'gemini-pro'")
-    return 'gemini-pro'
+    # الخيار الأخير المضمون دائماً
+    return 'models/gemini-1.5-flash'
 
 # ==========================================
 # 3. جمع البيانات
 # ==========================================
 def get_market_data():
-    tickers = ['NVDA', 'TSLA', 'AAPL', 'AMZN', 'GOOGL'] 
+    tickers = ['NVDA', 'TSLA', 'AAPL', 'AMZN', 'BTC-USD'] 
     full_report_data = []
     
-    print("📊 Collecting data from Web & Yahoo...")
+    print("📊 Collecting data...")
     for t in tickers:
-        # جلب السعر
         price = "N/A"
         try:
             stock = yf.Ticker(t, session=session)
@@ -67,15 +72,15 @@ def get_market_data():
         except:
             pass
 
-        # جلب الأخبار (Web Search)
         news_snippets = []
         try:
-            results = DDGS().text(f"{t} stock news analyst rating today", max_results=2)
+            # تقليل عدد النتائج إلى 1 لتسريع العملية وتقليل الضغط
+            results = DDGS().text(f"{t} stock news summary", max_results=1)
             if results:
                 for res in results:
                     news_snippets.append(f"- {res['title']}")
         except:
-            news_snippets.append("No news found.")
+            pass
 
         entry = f"STOCK: {t} | PRICE: {price} | NEWS: {'; '.join(news_snippets)}"
         full_report_data.append(entry)
@@ -87,10 +92,9 @@ def get_market_data():
 # 4. التحليل والإرسال
 # ==========================================
 def generate_ai_report(data):
-    # 1. نحصل على اسم الموديل الصحيح ديناميكياً
-    model_name = get_best_available_model()
-    
+    model_name = get_stable_model_name()
     print(f"🤖 Analyzing using: {model_name}")
+    
     model = genai.GenerativeModel(model_name)
     
     safety_settings = {
@@ -101,24 +105,34 @@ def generate_ai_report(data):
     }
 
     prompt = f"""
-    Acting as a financial analyst, summarize these stocks for a Telegram message in Arabic.
-    - Be concise.
-    - Use emojis (📈, 📉).
-    - Focus on the *WHY* (News).
+    You are a financial news bot. Summarize this data for Telegram in Arabic.
+    - Be extremely concise.
+    - Mention price and the main reason for movement.
+    - Use emojis.
     
     Data:
     {data}
     """
     
     try:
+        # إضافة تأخير بسيط قبل الطلب لتجنب Rate Limit
+        time.sleep(2)
         response = model.generate_content(prompt, safety_settings=safety_settings)
         return response.text
     except Exception as e:
-        return f"AI Generation Error ({model_name}): {str(e)}"
+        # إذا حدث خطأ 429 مرة أخرى، ننتظر ونحاول مرة واحدة أخيرة
+        if "429" in str(e):
+            print("⏳ Quota hit, waiting 10 seconds and retrying...")
+            time.sleep(10)
+            try:
+                response = model.generate_content(prompt, safety_settings=safety_settings)
+                return response.text
+            except:
+                pass
+        return f"AI Error: {str(e)}"
 
 def send_telegram_message(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("❌ Missing Telegram Tokens")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
@@ -130,10 +144,7 @@ if __name__ == "__main__":
         if len(data) > 10:
             report = generate_ai_report(data)
             send_telegram_message(report)
-            print("✅ Process Completed Successfully")
         else:
             send_telegram_message("❌ No data collected.")
     except Exception as e:
-        err_msg = f"❌ Critical Script Error: {str(e)}"
-        print(err_msg)
-        send_telegram_message(err_msg)
+        send_telegram_message(f"❌ Script Error: {str(e)}")
